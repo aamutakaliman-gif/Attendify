@@ -1,0 +1,13 @@
+{
+  "appId": "id.siaphadir.app",
+  "appName": "SiapHadir",
+  "webDir": "www",
+  "android": {
+    "allowMixedContent": false
+  },
+  "plugins": {
+    "LocalNotifications": {
+      "iconColor": "#1f3327"
+    }
+  }
+}

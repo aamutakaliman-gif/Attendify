@@ -1,0 +1,20 @@
+{
+  "name": "siaphadir-mobile",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Cangkang Android (APK) untuk SiapHadir",
+  "scripts": {
+    "copy-web": "node copy-web.js",
+    "sync": "npm run copy-web && cap sync android",
+    "apk": "npm run sync && cd android && ./gradlew assembleDebug"
+  },
+  "dependencies": {
+    "@capacitor/android": "7.6.9",
+    "@capacitor/core": "7.6.9",
+    "@capacitor/local-notifications": "7.0.7"
+  },
+  "devDependencies": {
+    "@capacitor/assets": "3.0.5",
+    "@capacitor/cli": "7.6.9"
+  }
+}

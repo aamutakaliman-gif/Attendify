@@ -1,0 +1,12 @@
+{
+  "name": "siaphadir-server",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Server absensi SiapHadir (tanpa dependensi)",
+  "main": "server.js",
+  "engines": { "node": ">=22.13" },
+  "scripts": {
+    "start": "node --no-warnings server.js",
+    "test": "node --no-warnings --test test.js"
+  }
+}
