@@ -1,11 +1,11 @@
 {
   "name": "SiapHadir",
   "short_name": "SiapHadir",
-  "description": "Absensi dan papan apel satuan",
+  "description": "Absensi dan papan kehadiran untuk kantor dan instansi",
   "start_url": "./",
   "display": "standalone",
-  "background_color": "#1f3327",
-  "theme_color": "#1f3327",
+  "background_color": "#17404a",
+  "theme_color": "#17404a",
   "lang": "id",
   "icons": [
     {"src": "icon-192.png", "sizes": "192x192", "type": "image/png"},

@@ -1,4 +1,4 @@
-// SiapHadir — server absensi satuan. Tanpa dependensi: Node.js >= 22.13 (node:sqlite bawaan).
+// SiapHadir — server absensi untuk perusahaan, instansi, dan organisasi. Tanpa dependensi: Node.js >= 22.13 (node:sqlite bawaan).
 // Jalankan: node server.js   (lihat README untuk variabel lingkungan)
 'use strict';
 process.env.TZ ||= 'Asia/Jakarta';
@@ -37,10 +37,31 @@ CREATE INDEX IF NOT EXISTS keluar_tgl ON keluar(tgl);
 `);
 const q = sql => db.prepare(sql);
 
-const STATUS = ['HDR','PKT','LAP','DL','BKO','BP','DIK','LPK','CT','IZN','SKT','TK'];
-const DEF_JAM = { mulai: '07:00', selesai: '15:30', hari: [1,2,3,4,5] };
+// Kelompok status (tetap). hadir & luar dihitung HADIR di laporan.
+const GROUPS = ['hadir', 'luar', 'tugas', 'libur', 'alpa'];
+// Paket status siap pakai. Admin bisa mengubah label, menonaktifkan, atau menambah status sendiri.
+const S_ = (k, l, g, ph = '') => ({ k, l, g, ph, aktif: true });
+const PRESETS = {
+  perusahaan: { nama: 'Perusahaan / swasta', status: [
+    S_('HDR','Hadir di kantor','hadir'), S_('SHF','Shift / piket','hadir','Shift atau pos'), S_('WFH','Kerja dari rumah','luar','Pekerjaan hari ini'),
+    S_('LAP','Kunjungan / tugas luar','luar','Klien atau lokasi kegiatan'), S_('DL','Perjalanan dinas','tugas','Kota tujuan, nomor surat tugas'),
+    S_('PLT','Pelatihan','tugas','Nama pelatihan, tempat'), S_('LBR','Libur shift','libur'), S_('CT','Cuti','libur','Jenis cuti'),
+    S_('IZN','Izin','libur','Alasan izin'), S_('SKT','Sakit','libur','Keterangan dokter'), S_('TK','Tanpa keterangan','alpa') ] },
+  instansi: { nama: 'Instansi pemerintah', status: [
+    S_('HDR','Hadir di kantor','hadir'), S_('PKT','Piket','hadir','Pos / jenis piket'), S_('LAP','Tugas lapangan','luar','Kegiatan, lokasi'),
+    S_('WFH','Kerja dari rumah','luar'), S_('DL','Dinas luar','tugas','Tujuan, nomor surat tugas'), S_('DPB','Diperbantukan','tugas','Instansi tujuan, nomor SK'),
+    S_('DIK','Diklat','tugas','Nama diklat, tempat'), S_('CT','Cuti','libur','Jenis cuti'), S_('IZN','Izin','libur','Alasan izin'),
+    S_('SKT','Sakit','libur','Keterangan'), S_('TK','Tanpa keterangan','alpa') ] },
+  tnipolri: { nama: 'TNI / Polri', status: [
+    S_('HDR','Hadir di kantor','hadir'), S_('PKT','Piket','hadir','Pos / jenis piket'), S_('LAP','Tugas lapangan','luar','Kegiatan, lokasi'),
+    S_('DL','Dinas luar','tugas','Tujuan, nomor Sprin'), S_('BKO','BKO','tugas','Satuan tujuan, nomor Sprin'), S_('BP','Bawah perintah (BP)','tugas','Satuan / pejabat, nomor Sprin'),
+    S_('DIK','Pendidikan / latihan','tugas','Nama pendidikan, tempat'), S_('LPK','Lepas piket','libur'), S_('CT','Cuti','libur','Jenis cuti'),
+    S_('IZN','Izin','libur','Alasan izin'), S_('SKT','Sakit','libur','Keterangan'), S_('TK','Tanpa keterangan','alpa') ] }
+};
+const DEF_JAM = { mulai: '08:00', selesai: '17:00', hari: [1,2,3,4,5] };
+const DEF_WARNA = '#17404a';
 const getMeta = () => {
-  const m = { nama: 'Satuan', logo: '', jam: DEF_JAM, video: false };
+  const m = { nama: 'Organisasi', logo: '', jam: DEF_JAM, video: false, warna: DEF_WARNA, status: PRESETS.perusahaan.status };
   for (const r of q('SELECT k,v FROM meta').all()) m[r.k] = JSON.parse(r.v);
   return m;
 };
@@ -133,7 +154,7 @@ function stateFor(u, bln, withBio){
   const bio = {};
   const rows = !withBio ? [] : u.admin ? q('SELECT pid,data FROM biodata').all() : q('SELECT pid,data FROM biodata WHERE pid=?').all(u.id);
   for (const r of rows) bio[r.pid] = JSON.parse(r.data);
-  return { me: { pid:u.id, admin:u.admin, must_change:!!u.must_change }, meta: { nama:meta.nama, logo:meta.logo, jam:meta.jam, video:!!meta.video },
+  return { me: { pid:u.id, admin:u.admin, must_change:!!u.must_change }, meta: { nama:meta.nama, logo:meta.logo, jam:meta.jam, video:!!meta.video, warna:meta.warna, status:meta.status },
            personel, absen, bio: withBio ? bio : undefined, server: { now: Date.now(), today: today(), duty: dutyNow(meta.jam) } };
 }
 
@@ -143,19 +164,20 @@ const route = (method, pattern, opts, fn) => routes.push({ method, re: new RegEx
 
 route('GET', '/api/status', { pub:true }, () => {
   const m = getMeta(), n = q('SELECT COUNT(*) n FROM personel').get().n;
-  return { app:'SiapHadir', setup: n === 0, nama: m.nama, logo: m.logo, video: !!m.video, jam: m.jam };
+  return { app:'SiapHadir', setup: n === 0, nama: m.nama, logo: m.logo, video: !!m.video, jam: m.jam, warna: m.warna };
 });
 
 route('POST', '/api/setup', { pub:true }, async (req) => {
   if (q('SELECT COUNT(*) n FROM personel').get().n) throw new HttpError(409, 'Aplikasi sudah disiapkan');
   const b = await json(req);
   const nama = str(b.nama, 120), nrp = str(b.nrp, 40), pin = str(b.pin, 12);
-  if (!nama || !nrp) throw bad('Nama dan NRP wajib diisi');
+  if (!nama || !nrp) throw bad('Nama dan nomor induk wajib diisi');
   if (!/^\d{6}$/.test(pin)) throw bad('PIN harus 6 angka');
   const id = 'n' + nrp.replace(/\W/g, '');
   q("INSERT INTO personel(id,nama,pangkat,nrp,jabatan,urut,role) VALUES(?,?,?,?,?,1,'admin')").run(id, nama, str(b.pangkat, 60), nrp, str(b.jabatan, 200));
   setPin(id, pin, false);
   if (b.unit) setMeta('nama', str(b.unit, 120));
+  if (b.preset && PRESETS[b.preset]) setMeta('status', PRESETS[b.preset].status);
   log(id, 'setup', 'Admin pertama dibuat');
   return { ok:true };
 });
@@ -170,7 +192,7 @@ route('POST', '/api/login', { pub:true }, async (req) => {
     const expired = f && f.until && f.until <= Date.now();
     const n = (expired ? 0 : (f?.n || 0)) + 1;
     fails.set(nrp, { n, until: n >= 5 ? Date.now() + 15*6e4 : 0 });
-    throw new HttpError(401, 'NRP atau PIN salah');
+    throw new HttpError(401, 'Nomor induk atau PIN salah');
   }
   fails.delete(nrp);
   const token = crypto.randomBytes(32).toString('base64url');
@@ -200,7 +222,7 @@ route('POST', '/api/absen', {}, async (req, u) => {
   const b = await json(req);
   const pid = str(b.pid, 60);
   if (pid !== u.id && !u.admin) throw new HttpError(403, 'Anda hanya bisa mengisi absen sendiri');
-  if (!q('SELECT 1 FROM personel WHERE id=? AND aktif=1').get(pid)) throw bad('Personel tidak ditemukan');
+  if (!q('SELECT 1 FROM personel WHERE id=? AND aktif=1').get(pid)) throw bad('Pegawai tidak ditemukan');
   const dates = Array.isArray(b.dates) ? b.dates.filter(validDate) : [];
   if (!dates.length || dates.length > 93) throw bad('Tanggal tidak valid');
   if (b.k === null){
@@ -208,8 +230,8 @@ route('POST', '/api/absen', {}, async (req, u) => {
     log(u.id, 'hapus-absen', pid + ' ' + dates.join(','));
     return { ok:true };
   }
-  if (!STATUS.includes(b.k)) throw bad('Status tidak dikenal');
-  // Privasi lokasi: koordinat hanya disimpan untuk hari ini, pada jam dinas, dan tidak sedang keperluan mendadak.
+  if (!getMeta().status.some(s => s.k === b.k && s.aktif !== false)) throw bad('Status tidak dikenal atau tidak aktif');
+  // Privasi lokasi: koordinat hanya disimpan untuk hari ini, pada jam kerja, dan tidak sedang keperluan mendadak.
   const t0 = today();
   let gps = null;
   if (b.gps && dates.length === 1 && dates[0] === t0 && dutyNow()){
@@ -229,7 +251,7 @@ route('POST', '/api/keluar', {}, async (req, u) => {
   const b = await json(req), t = today();
   const alasan = str(b.alasan, 300);
   if (alasan.length < 5) throw bad('Tulis keterangan keperluan (minimal 5 huruf)');
-  if (!dutyNow()) throw bad('Keperluan mendadak hanya berlaku pada jam dinas');
+  if (!dutyNow()) throw bad('Keperluan mendadak hanya berlaku pada jam kerja');
   if (!q('SELECT 1 FROM absen WHERE pid=? AND tgl=?').get(u.id, t)) throw bad('Lapor kehadiran dulu sebelum keperluan mendadak');
   if (q("SELECT 1 FROM keluar WHERE pid=? AND tgl=? AND (kembali IS NULL OR kembali='')").get(u.id, t)) throw bad('Masih ada keperluan mendadak yang belum selesai');
   q('INSERT INTO keluar(pid,tgl,keluar,alasan,est) VALUES(?,?,?,?,?)').run(u.id, t, nowHM(), alasan, str(b.est, 5));
@@ -248,7 +270,7 @@ route('POST', '/api/bio', {}, async (req, u) => {
   const b = await json(req);
   const pid = str(b.pid, 60);
   if (pid !== u.id && !u.admin) throw new HttpError(403, 'Anda hanya bisa mengisi biodata sendiri');
-  if (!q('SELECT 1 FROM personel WHERE id=?').get(pid)) throw bad('Personel tidak ditemukan');
+  if (!q('SELECT 1 FROM personel WHERE id=?').get(pid)) throw bad('Pegawai tidak ditemukan');
   const data = b.data && typeof b.data === 'object' ? b.data : {};
   const clean = {};
   for (const [k, v] of Object.entries(data)) if (/^\w{1,20}$/.test(k)) clean[k] = k === 'foto' ? String(v).slice(0, 400000) : str(v, 2000);
@@ -262,11 +284,28 @@ route('POST', '/api/bio', {}, async (req, u) => {
 /* --- admin --- */
 route('POST', '/api/meta', { admin:true }, async (req, u) => {
   const b = await json(req);
-  if ('nama' in b) setMeta('nama', str(b.nama, 120) || 'Satuan');
+  if ('nama' in b) setMeta('nama', str(b.nama, 120) || 'Organisasi');
   if ('logo' in b){ const l = String(b.logo || ''); if (l && !/^data:image\/(png|webp|jpeg|svg\+xml);base64,/.test(l)) throw bad('Logo harus berupa gambar'); setMeta('logo', l.slice(0, 600000)); }
+  if ('warna' in b){ if (!/^#[0-9a-fA-F]{6}$/.test(b.warna)) throw bad('Warna tidak valid'); setMeta('warna', b.warna.toLowerCase()); }
+  if ('preset' in b){ if (!PRESETS[b.preset]) throw bad('Paket status tidak dikenal'); setMeta('status', PRESETS[b.preset].status); }
+  if ('status' in b){
+    const list = Array.isArray(b.status) ? b.status : [];
+    const seen = new Set(), clean = [];
+    for (const x of list){
+      const k = str(x.k, 4).toUpperCase(), l = str(x.l, 40), g = str(x.g, 10);
+      if (!/^[A-Z0-9]{2,4}$/.test(k)) throw bad('Kode status harus 2–4 huruf/angka: ' + (x.k || '(kosong)'));
+      if (seen.has(k)) throw bad('Kode status ganda: ' + k);
+      if (!l) throw bad('Nama status ' + k + ' wajib diisi');
+      if (!GROUPS.includes(g)) throw bad('Kelompok status tidak dikenal: ' + g);
+      seen.add(k); clean.push({ k, l, g, ph: str(x.ph, 80), aktif: x.aktif !== false });
+    }
+    if (clean.length > 30) throw bad('Maksimal 30 status');
+    if (!clean.some(s => s.aktif && (s.g === 'hadir' || s.g === 'luar'))) throw bad('Minimal harus ada satu status hadir yang aktif');
+    setMeta('status', clean);
+  }
   if ('jam' in b){
     const j = b.jam || {};
-    if (!/^\d{2}:\d{2}$/.test(j.mulai) || !/^\d{2}:\d{2}$/.test(j.selesai) || j.mulai >= j.selesai) throw bad('Jam dinas tidak valid');
+    if (!/^\d{2}:\d{2}$/.test(j.mulai) || !/^\d{2}:\d{2}$/.test(j.selesai) || j.mulai >= j.selesai) throw bad('Jam kerja tidak valid');
     const hari = (Array.isArray(j.hari) ? j.hari : []).map(Number).filter(d => d >= 0 && d <= 6);
     if (!hari.length) throw bad('Pilih minimal satu hari kerja');
     setMeta('jam', { mulai: j.mulai, selesai: j.selesai, hari: [...new Set(hari)] });
@@ -285,11 +324,11 @@ route('POST', '/api/video', { admin:true }, async (req, u) => {
 
 function upsertPerson(b){
   const nama = str(b.nama, 120), nrp = str(b.nrp, 40);
-  if (!nama || !nrp) throw bad('Nama dan NRP wajib diisi');
+  if (!nama || !nrp) throw bad('Nama dan nomor induk wajib diisi');
   const ex = b.id ? q('SELECT id FROM personel WHERE id=?').get(b.id) : q('SELECT id FROM personel WHERE nrp=?').get(nrp);
   if (ex){
     const dup = q('SELECT id FROM personel WHERE nrp=? AND id<>?').get(nrp, ex.id);
-    if (dup) throw bad('NRP ' + nrp + ' sudah dipakai personel lain');
+    if (dup) throw bad('Nomor induk ' + nrp + ' sudah dipakai pegawai lain');
     q('UPDATE personel SET nama=?,pangkat=?,nrp=?,jabatan=?,urut=?,aktif=1 WHERE id=?').run(nama, str(b.pangkat, 60), nrp, str(b.jabatan, 200), Number(b.urut) || 999, ex.id);
     return { id: ex.id, created: false };
   }
@@ -323,7 +362,7 @@ route('POST', '/api/personel/import', { admin:true }, async (req, u) => {
   return { ok:true, pins };
 });
 route('POST', '/api/personel/:id/reset-pin', { admin:true }, async (req, u, url, prm) => {
-  if (!q('SELECT 1 FROM personel WHERE id=?').get(prm.id)) throw new HttpError(404, 'Personel tidak ditemukan');
+  if (!q('SELECT 1 FROM personel WHERE id=?').get(prm.id)) throw new HttpError(404, 'Pegawai tidak ditemukan');
   const pin = newPin(); setPin(prm.id, pin, true);
   q('DELETE FROM sesi WHERE pid=?').run(prm.id);
   log(u.id, 'reset-pin', prm.id);
@@ -344,6 +383,7 @@ route('DELETE', '/api/personel/:id', { admin:true }, async (req, u, url, prm) =>
   log(u.id, 'nonaktif-personel', prm.id);
   return { ok:true };
 });
+route('GET', '/api/presets', { pub:true }, () => ({ presets: Object.entries(PRESETS).map(([id, p]) => ({ id, nama: p.nama, status: p.status })) }));
 route('GET', '/api/log', { admin:true }, () => ({ log: q('SELECT l.at,l.aksi,l.detail,p.nama,p.pangkat FROM log l LEFT JOIN personel p ON p.id=l.pid ORDER BY l.id DESC LIMIT 200').all() }));
 
 /* ---------- static files ---------- */

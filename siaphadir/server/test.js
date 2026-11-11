@@ -117,3 +117,23 @@ test('nonaktifkan personel memutus sesinya', async () => {
   assert.equal((await call('DELETE', '/api/personel/' + pidA, null, admin)).status, 200);
   assert.equal((await call('GET', '/api/state', null, anggota)).status, 401);
 });
+
+test('status bisa diatur: paket, status sendiri, status nonaktif ditolak', async () => {
+  const pr = await call('GET', '/api/presets');
+  assert.deepEqual(pr.body.presets.map(p => p.id), ['perusahaan', 'instansi', 'tnipolri']);
+  assert.equal((await call('POST', '/api/meta', { preset: 'tnipolri' }, admin)).status, 200);
+  let s = await call('GET', '/api/state', null, admin);
+  assert.ok(s.body.meta.status.some(x => x.k === 'BKO'));
+  const list = [{ k: 'HDR', l: 'Masuk', g: 'hadir' }, { k: 'ON', l: 'Lembur online', g: 'luar' }, { k: 'CT', l: 'Cuti', g: 'libur', aktif: false }];
+  assert.equal((await call('POST', '/api/meta', { status: list }, admin)).status, 200);
+  assert.equal((await call('POST', '/api/meta', { status: [{ k: 'CT', l: 'Cuti', g: 'libur' }] }, admin)).status, 400, 'harus ada status hadir');
+  assert.equal((await call('POST', '/api/meta', { status: [{ k: 'X', l: 'a', g: 'hadir' }] }, admin)).status, 400, 'kode terlalu pendek');
+  assert.equal((await call('POST', '/api/meta', { warna: 'merah' }, admin)).status, 400);
+  assert.equal((await call('POST', '/api/meta', { warna: '#AA3300' }, admin)).status, 200);
+  s = await call('GET', '/api/state', null, admin);
+  const pid = s.body.me.pid, t = todayISO();
+  assert.equal((await call('POST', '/api/absen', { pid, dates: [t], k: 'ON' }, admin)).status, 200);
+  assert.equal((await call('POST', '/api/absen', { pid, dates: [t], k: 'CT' }, admin)).status, 400, 'status nonaktif');
+  assert.equal((await call('POST', '/api/absen', { pid, dates: [t], k: 'BKO' }, admin)).status, 400, 'status sudah dihapus');
+  assert.equal(s.body.meta.warna, '#aa3300');
+});
